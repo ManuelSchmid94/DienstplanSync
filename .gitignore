@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# PyInstaller build artifacts
+build/
+dist/
+*.spec.bak
+
+# macOS
+.DS_Store
+*.dmg
+
+# Tools downloaded by build scripts
+tools/
+
+# Playwright browser cache (bundled via spec, not committed)
+# The actual browsers stay in ~/Library/Caches/ms-playwright/
+
+# Log files
+*.log
+
+# Credentials / secrets (never commit)
+credentials.json
+token.json
+settings.json

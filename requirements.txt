@@ -1,0 +1,14 @@
+# GUI
+PySide6>=6.6.0
+
+# Web automation
+playwright>=1.42.0
+
+# PDF parsing
+pdfplumber>=0.10.3
+
+# Secure credential storage (macOS Keychain)
+keyring>=25.1.0
+
+# Optional but recommended for build reproducibility
+pyinstaller>=6.5.0
