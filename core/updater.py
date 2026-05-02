@@ -36,8 +36,22 @@ def check_for_update(update_url: str, current_version: str) -> Optional[Tuple[st
         req = urllib.request.Request(update_url, headers={"User-Agent": "DienstplanSync"})
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read().decode())
+
+        # Support both a simple {"version": "X.Y.Z", "url": "..."} payload
+        # and the GitHub Releases API format (tag_name + assets[].browser_download_url).
         new_ver = data.get("version", "").strip()
         dmg_url = data.get("url", "").strip()
+
+        if not new_ver:
+            tag = data.get("tag_name", "").lstrip("vV").strip()
+            new_ver = tag
+        if not dmg_url:
+            for asset in data.get("assets", []):
+                name = asset.get("name", "")
+                if name.endswith(".dmg"):
+                    dmg_url = asset.get("browser_download_url", "").strip()
+                    break
+
         if new_ver and dmg_url and _newer(new_ver, current_version):
             return new_ver, dmg_url
     except Exception as exc:

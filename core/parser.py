@@ -28,10 +28,14 @@ _TIME_RANGE_RE = re.compile(r"(\d{1,2}:\d{2})\s*[-–]\s*(\d{1,2}:\d{2})")
 
 # Free day: "0: 00:00 - 00:00" or "OSK: 00:00" or "0:00:00"
 # Character class includes ] (close-bracket) since OCR renders cell borders as |__]0:…
-_FREE_RE = re.compile(r"(?:^|[|_\[\]\s])0\s*[:\.]?\s*00:00\s*[-–]\s*00:00|OSK\s*:\s*00:00", re.IGNORECASE)
+# T is included because OCR often renders "Do: 00:00" as "T0: 00:00" (D→T, o→0)
+_FREE_RE = re.compile(r"(?:^|[|_\[\]\sT])0\s*[:\.]?\s*00:00\s*[-–]\s*00:00|OSK\s*:\s*00:00", re.IGNORECASE)
 
 # Weekday at start of line (possibly after some noise characters)
 _WD_RE = re.compile(r"^\s*[|_\[\(\s]{0,5}(Mo|Di|Mi|Do|Fr|Sa|So)\b", re.IGNORECASE)
+
+# Day number bleeding from left column into shift text: "10 | _[OSK:..." → extracts 10
+_DAY_NUM_RE = re.compile(r"^\s*(\d{1,2})\s*[|_\[\]]")
 
 # Ist (hours) value at the end of a line: "7,70" or "10,00" or "6,75"
 _IST_RE = re.compile(r"\b(\d{1,2}[,.]?\d{0,2})\s*[|,]?\s*$")
@@ -163,6 +167,7 @@ def _parse(text: str, year: int, month: int) -> list[Shift]:
     current_day = 0          # 1-based day of month, 0 = before first day
     current_shifts: list[Shift] = []
     result: list[Shift] = []
+    pre_anchor: list[Shift] = []  # shifts seen before the first day anchor
 
     def commit():
         result.extend(current_shifts)
@@ -183,10 +188,17 @@ def _parse(text: str, year: int, month: int) -> list[Shift]:
 
         if is_free:
             new_day_detected = True
-            if wd:
-                new_day_num = _resolve_day(year, month, wd, current_day)
-            else:
-                new_day_num = current_day + 1
+            # Check for a day number bleeding from the left column first
+            day_m = _DAY_NUM_RE.match(line)
+            if day_m:
+                candidate = int(day_m.group(1))
+                if 1 <= candidate <= n_days and candidate > current_day:
+                    new_day_num = candidate
+            if new_day_num is None:
+                if wd:
+                    new_day_num = _resolve_day(year, month, wd, current_day)
+                else:
+                    new_day_num = current_day + 1
 
         elif wd and tr:
             new_day_detected = True
@@ -217,13 +229,21 @@ def _parse(text: str, year: int, month: int) -> list[Shift]:
             # (contains noise characters, short, not a continuation shift)
             noise_chars = len(re.findall(r'[|_\[\]\\]', line))
             alpha_chars = len(re.findall(r'[A-Za-zÄÖÜäöüß]', line))
-            is_noise_line = noise_chars >= 1 or (alpha_chars < 5 and len(line) < 30)
+            # Also catch all-caps short lines like "I BR ER LE" (OCR of table borders)
+            is_all_caps_border = (
+                len(line) < 25
+                and line == line.upper()
+                and all(len(w) <= 3 for w in line.split())
+            )
+            is_noise_line = noise_chars >= 1 or (alpha_chars < 5 and len(line) < 30) or is_all_caps_border
             if is_noise_line and not _is_footer(line):
                 new_day_detected = True
                 new_day_num = current_day + 1
 
         # ── Commit previous day and advance ────────────────────────────────────
         if new_day_detected and new_day_num is not None:
+            was_at_zero = current_day == 0
+
             # When a weekday jump skips a day (gap > 1) and the current day holds
             # shifts of the same type as the upcoming shift, those shifts belong to
             # the day immediately before the new weekday-confirmed day, not to the
@@ -259,6 +279,15 @@ def _parse(text: str, year: int, month: int) -> list[Shift]:
 
             current_day = min(new_day_num, n_days)
 
+            # Place buffered pre-anchor shifts on the day just before the first anchor
+            if was_at_zero and pre_anchor and current_day > 1:
+                placed_day = current_day - 1
+                date_str = f"{year:04d}-{month:02d}-{placed_day:02d}"
+                for s in pre_anchor:
+                    result.append(Shift(date=date_str, start=s.start, end=s.end, type=s.type))
+                logger.debug("Pre-anchor: %d shift(s) placed on day %d", len(pre_anchor), placed_day)
+                pre_anchor = []
+
             if not is_free and tr:
                 start, end = _norm(tr.group(1)), _norm(tr.group(2))
                 if not (start == "00:00" and end == "00:00"):
@@ -291,6 +320,14 @@ def _parse(text: str, year: int, month: int) -> list[Shift]:
                     logger.debug("Skipping OCR duplicate: %s %s-%s [%s]", date_str, start, end, shift_type)
                 else:
                     current_shifts.append(Shift(date=date_str, start=start, end=end, type=shift_type))
+
+        elif tr and current_day == 0:
+            # Shift appears before the first day anchor – buffer it for later placement
+            start, end = _norm(tr.group(1)), _norm(tr.group(2))
+            if not (start == "00:00" and end == "00:00"):
+                shift_type = _extract_type(line)
+                pre_anchor.append(Shift(date="", start=start, end=end, type=shift_type))
+                logger.debug("Buffered pre-anchor shift: %s-%s [%s]", start, end, shift_type)
 
     commit()
 
